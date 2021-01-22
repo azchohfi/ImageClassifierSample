@@ -1,4 +1,5 @@
-﻿using System;
+﻿using CommandLine;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -13,7 +14,26 @@ namespace ImageClassifier
 {
     class Program
     {
-        static async Task Main(string[] args)
+        static async Task<int> Main(string[] args)
+        {
+            return await Parser.Default.ParseArguments<CommandLineOptions>(args)
+                .MapResult(async (CommandLineOptions opts) =>
+                {
+                    try
+                    {
+                        // We have the parsed arguments, so let's just pass them down
+                        return await AnalyzeFileAsync(opts.Path, opts.Confidence);
+                    }
+                    catch
+                    {
+                        Console.WriteLine("Error!");
+                        return -3; // Unhandled error
+                    }
+                },
+                errs => Task.FromResult(-1)); // Invalid arguments
+        }
+
+        private static async Task<int> AnalyzeFileAsync(string filePath, float confidence)
         {
             var rootDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
             var squeezeNetModel = SqueezeNetModel.CreateFromFilePath(Path.Combine(rootDir, "squeezenet1.0-9.onnx"));
@@ -24,11 +44,6 @@ namespace ImageClassifier
             {
                 labels.Add(kvp.Value);
             }
-
-            if (args.Length < 1)
-                return;
-
-            var filePath = args[0];
 
             // Open image file
             SqueezeNetOutput output;
@@ -63,13 +78,15 @@ namespace ImageClassifier
                 _ => 0
             });
 
-            if (results[0].p >= 0.9f)
+            if (results[0].p >= confidence)
             {
                 Console.WriteLine($"Image '{filePath}' is classified as '{labels[results[0].index]}'(p={(int)(results[0].p * 100)}%).");
+                return 0; // Success
             }
             else
             {
                 Console.WriteLine("Sorry, but I'm not sure what this is.");
+                return -2; // Not enought confidence
             }
         }
     }
