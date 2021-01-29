@@ -1,14 +1,9 @@
 ﻿using CommandLine;
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Reflection;
-using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.EventLog;
 using System.Threading.Tasks;
-using Windows.AI.MachineLearning;
-using Windows.Graphics.Imaging;
-using Windows.Media;
 
 namespace ImageClassifier
 {
@@ -19,75 +14,25 @@ namespace ImageClassifier
             return await Parser.Default.ParseArguments<CommandLineOptions>(args)
                 .MapResult(async (CommandLineOptions opts) =>
                 {
-                    try
-                    {
-                        // We have the parsed arguments, so let's just pass them down
-                        return await AnalyzeFileAsync(opts.Path, opts.Confidence);
-                    }
-                    catch
-                    {
-                        Console.WriteLine("Error!");
-                        return -3; // Unhandled error
-                    }
+                    // We have the parsed arguments, so let's just pass them down
+                    await CreateHostBuilder(args, opts).Build().RunAsync();
+                    return 0;
                 },
                 errs => Task.FromResult(-1)); // Invalid arguments
         }
 
-        private static async Task<int> AnalyzeFileAsync(string filePath, float confidence)
-        {
-            var rootDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            var squeezeNetModel = SqueezeNetModel.CreateFromFilePath(Path.Combine(rootDir, "squeezenet1.0-9.onnx"));
-
-            // Load labels from JSON
-            var labels = new List<string>();
-            foreach (var kvp in JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(Path.Combine(rootDir, "Labels.json"))))
-            {
-                labels.Add(kvp.Value);
-            }
-
-            // Open image file
-            SqueezeNetOutput output;
-            using (var fileStream = File.OpenRead(filePath))
-            {
-                // Convert from FileStream to ImageFeatureValue
-                var decoder = await BitmapDecoder.CreateAsync(fileStream.AsRandomAccessStream());
-                using var softwareBitmap = await decoder.GetSoftwareBitmapAsync();
-                using var inputImage = VideoFrame.CreateWithSoftwareBitmap(softwareBitmap);
-                var imageTensor = ImageFeatureValue.CreateFromVideoFrame(inputImage);
-
-                output = await squeezeNetModel.EvaluateAsync(new SqueezeNetInput
+        public static IHostBuilder CreateHostBuilder(string[] args, CommandLineOptions opts) =>
+            Host.CreateDefaultBuilder(args)
+                .ConfigureLogging(configureLogging => configureLogging.AddFilter<EventLogLoggerProvider>(level => level >= LogLevel.Information))
+                .ConfigureServices((hostContext, services) =>
                 {
-                    data_0 = imageTensor
-                });
-            }
-
-            // Get result, which is a list of floats with all the probabilities for all 1000 classes of SqueezeNet
-            var resultTensor = output.softmaxout_1;
-            var resultVector = resultTensor.GetAsVectorView();
-
-            // Order the 1000 results with their indexes to know which class is the highest ranked one
-            List<(int index, float p)> results = new List<(int, float)>();
-            for (int i = 0; i < resultVector.Count; i++)
-            {
-                results.Add((index: i, p: resultVector.ElementAt(i)));
-            }
-            results.Sort((a, b) => a.p switch
-            {
-                var p when p < b.p => 1,
-                var p when p > b.p => -1,
-                _ => 0
-            });
-
-            if (results[0].p >= confidence)
-            {
-                Console.WriteLine($"Image '{filePath}' is classified as '{labels[results[0].index]}'(p={(int)(results[0].p * 100)}%).");
-                return 0; // Success
-            }
-            else
-            {
-                Console.WriteLine("Sorry, but I'm not sure what this is.");
-                return -2; // Not enought confidence
-            }
-        }
+                    services.AddSingleton(opts);
+                    services.AddHostedService<ImageClassifierWorker>()
+                        .Configure<EventLogSettings>(config =>
+                        {
+                            config.LogName = "Image Classifier Service";
+                            config.SourceName = "Image Classifier Service Source";
+                        });
+                }).UseWindowsService();
     }
 }
